@@ -17,6 +17,7 @@ import config
 from database import Database
 from keyboards import *
 
+# Настройка логирования
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -27,14 +28,15 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Инициализация
 bot = Bot(token=config.BOT_TOKEN, default=DefaultBotProperties(parse_mode=ParseMode.HTML))
 dp = Dispatcher(storage=MemoryStorage())
 db = Database()
 
-# ================== ХРАНИЛИЩЕ СЕССИЙ ==================
-user_sessions: Dict[int, Dict] = {}  # telegram_id -> {user_id, nickname}
+# Хранилище сессий пользователей
+user_sessions: Dict[int, Dict] = {}
 
-# ================== СИСТЕМА ОЧИСТКИ ==================
+# Система очистки сообщений
 user_messages: Dict[int, deque] = {}
 MAX_MSGS = 15
 
@@ -52,8 +54,8 @@ async def del_msgs(cid, uid, keep=2):
             await bot.delete_message(cid, mid)
             if mid in user_messages[uid]:
                 user_messages[uid].remove(mid)
-        except:
-            pass
+        except Exception as e:
+            logger.debug(f"Ошибка удаления: {e}")
 
 async def send(cid, uid, text, kb=None, keep=2, **kwargs):
     await del_msgs(cid, uid, keep)
@@ -77,7 +79,7 @@ async def clear_chat(cid, uid):
                 pass
         user_messages[uid].clear()
 
-# ================== FSM ==================
+# ================== FSM СОСТОЯНИЯ ==================
 class Register(StatesGroup):
     nick = State()
     pwd = State()
@@ -115,6 +117,13 @@ class GenreManage(StatesGroup):
 async def cmd_start(msg: types.Message, state: FSMContext):
     await state.clear()
     await clear_chat(msg.chat.id, msg.from_user.id)
+    
+    # Создаем пользователя, если его нет
+    user = db.get_user_by_telegram(msg.from_user.id)
+    if not user:
+        # Просто регистрируем в системе без пароля
+        pass
+    
     await send(msg.chat.id, msg.from_user.id,
                "🎮 <b>GameVault</b>\n\nВыбери платформу:", platforms_kb())
 
@@ -125,14 +134,19 @@ async def cmd_stats(msg: types.Message):
         return
     s = db.get_stats()
     await send(msg.chat.id, msg.from_user.id,
-               f"📊 Статистика:\n👥 Пользователей: {s['users']}\n🎮 Игр: {s['games']}\n🎨 Жанров: {s['genres']}\n📥 Скачиваний: {s['downloads']}")
+               f"📊 <b>Статистика</b>\n\n"
+               f"👥 Пользователей: {s['users']}\n"
+               f"🎮 Игр: {s['games']}\n"
+               f"🎨 Жанров: {s['genres']}\n"
+               f"💬 Комментариев: {s['comments']}\n"
+               f"📥 Скачиваний: {s['downloads']}")
 
 @dp.message(Command("admin"))
 async def cmd_admin(msg: types.Message):
     if msg.from_user.id not in config.ADMIN_IDS:
         await send(msg.chat.id, msg.from_user.id, "❌ Нет прав")
         return
-    await send(msg.chat.id, msg.from_user.id, "🛠 Админ-панель:", admin_main_kb())
+    await send(msg.chat.id, msg.from_user.id, "🛠 <b>Админ-панель</b>", admin_main_kb())
 
 @dp.message(Command("addgame"))
 async def cmd_addgame(msg: types.Message, state: FSMContext):
@@ -149,17 +163,22 @@ async def cmd_addscreens(msg: types.Message, state: FSMContext):
         await send(msg.chat.id, msg.from_user.id, "❌ Нет прав")
         return
     try:
-        game_id = int(msg.text.split()[1])
+        args = msg.text.split()
+        if len(args) < 2:
+            raise ValueError("Нет ID")
+        game_id = int(args[1])
         game = db.get_game(game_id)
         if game:
             await state.update_data(game_id=game_id, screens=[])
             await state.set_state(AddScreenshots.screens)
             await send(msg.chat.id, msg.from_user.id,
-                      f"🖼️ Отправь фото для '{game['title']}' (до 5). /done для завершения")
+                      f"🖼️ Отправь фото для '{game['title']}' (до 5).\n"
+                      f"После отправки всех фото напиши /done")
             return
-    except:
-        pass
-    await send(msg.chat.id, msg.from_user.id, "❌ Использование: /addscreenshots [ID]")
+    except Exception as e:
+        logger.error(f"Ошибка addscreenshots: {e}")
+    
+    await send(msg.chat.id, msg.from_user.id, "❌ Использование: /addscreenshots [ID игры]")
 
 # ================== ПРОФИЛЬ ==================
 @dp.callback_query(F.data == "profile")
@@ -173,16 +192,17 @@ async def profile_cb(cb: types.CallbackQuery, state: FSMContext):
         user = db.get_user_by_id(session['user_id'])
         if user:
             purchases = db.get_purchases(session['user_id'])
-            text = f"👤 <b>{user['nickname']}</b>\n📅 {user['registered_date'][:10]}\n\n🎯 Подписки:\n"
+            text = f"👤 <b>{user['nickname']}</b>\n📅 {user['registered_date'][:10]}\n\n"
             if purchases:
+                text += "🎯 <b>Активные подписки:</b>\n"
                 for p in purchases:
                     text += f"• {p['display_name']} до {p['expiry_date'][:10]}\n"
             else:
-                text += "• Нет активных подписок"
+                text += "❌ Нет активных подписок"
             await send(cb.message.chat.id, uid, text, profile_kb())
             return
     
-    await send(cb.message.chat.id, uid, "👤 Авторизация:", login_kb())
+    await send(cb.message.chat.id, uid, "👤 <b>Авторизация</b>\n\nВойди или зарегистрируйся:", login_kb())
 
 @dp.callback_query(F.data == "login")
 async def login_start(cb: types.CallbackQuery, state: FSMContext):
@@ -214,7 +234,8 @@ async def login_pwd(msg: types.Message, state: FSMContext):
 async def register_start(cb: types.CallbackQuery, state: FSMContext):
     await cb.answer()
     await state.set_state(Register.nick)
-    await send(cb.message.chat.id, cb.from_user.id, "📝 Придумайте никнейм (буквы и цифры):", cancel_kb())
+    await send(cb.message.chat.id, cb.from_user.id, 
+               "📝 Придумай никнейм (только буквы и цифры, без пробелов):", cancel_kb())
 
 @dp.message(Register.nick)
 async def reg_nick(msg: types.Message, state: FSMContext):
@@ -223,11 +244,12 @@ async def reg_nick(msg: types.Message, state: FSMContext):
         await send(msg.chat.id, msg.from_user.id, "❌ Только буквы и цифры")
         return
     if db.get_user_by_telegram(msg.from_user.id):
-        await send(msg.chat.id, msg.from_user.id, "❌ Вы уже зарегистрированы")
+        await send(msg.chat.id, msg.from_user.id, "❌ Ты уже зарегистрирован")
+        await state.clear()
         return
     await state.update_data(nick=nick)
     await state.set_state(Register.pwd)
-    await send(msg.chat.id, msg.from_user.id, "🔐 Придумайте пароль (мин 4 символа):", cancel_kb())
+    await send(msg.chat.id, msg.from_user.id, "🔐 Придумай пароль (мин 4 символа):", cancel_kb())
 
 @dp.message(Register.pwd)
 async def reg_pwd(msg: types.Message, state: FSMContext):
@@ -237,7 +259,7 @@ async def reg_pwd(msg: types.Message, state: FSMContext):
         return
     await state.update_data(pwd=pwd)
     await state.set_state(Register.confirm)
-    await send(msg.chat.id, msg.from_user.id, "🔐 Повторите пароль:", cancel_kb())
+    await send(msg.chat.id, msg.from_user.id, "🔐 Повтори пароль:", cancel_kb())
 
 @dp.message(Register.confirm)
 async def reg_confirm(msg: types.Message, state: FSMContext):
@@ -261,15 +283,15 @@ async def subs_cb(cb: types.CallbackQuery):
     uid = cb.from_user.id
     session = user_sessions.get(uid)
     if not session:
-        await send(cb.message.chat.id, uid, "❌ Войдите в систему")
+        await send(cb.message.chat.id, uid, "❌ Сначала войди в систему")
         return
     purchases = db.get_purchases(session['user_id'])
-    text = "📊 Ваши подписки:\n\n"
     if purchases:
+        text = "📊 <b>Твои подписки:</b>\n\n"
         for p in purchases:
             text += f"• {p['display_name']} до {p['expiry_date'][:10]}\n"
     else:
-        text += "Нет активных подписок"
+        text = "❌ У тебя нет активных подписок"
     await send(cb.message.chat.id, uid, text, profile_kb())
 
 @dp.callback_query(F.data == "cancel")
@@ -319,7 +341,10 @@ async def genre_cb(cb: types.CallbackQuery, state: FSMContext):
     if genre['is_paid'] and not has_access:
         text = (f"💎 <b>{genre['display_name']}</b>\n\n"
                 f"{genre['description']}\n\n"
-                f"Цена: {genre['price_stars']} ⭐ за 30 дней")
+                f"💰 Цена: {genre['price_stars']} ⭐ за 30 дней\n\n"
+                f"Ты можешь посмотреть игры, но скачать их сможешь только после покупки.")
+        
+        from aiogram.utils.keyboard import InlineKeyboardBuilder
         kb = InlineKeyboardBuilder()
         kb.button(text=f"💫 Купить за {genre['price_stars']} ⭐", callback_data=f"buy_{genre_id}")
         kb.button(text="📋 Посмотреть игры", callback_data=f"preview_{genre_id}_1")
@@ -353,6 +378,8 @@ async def preview_cb(cb: types.CallbackQuery, state: FSMContext):
         await send(cb.message.chat.id, cb.from_user.id,
                   f"💎 {genre['display_name']} (предпросмотр)",
                   games_kb(games, genre_id, cur_page, pages))
+    else:
+        await send(cb.message.chat.id, cb.from_user.id, "😕 Игр пока нет")
 
 @dp.callback_query(F.data.startswith("back_genres_"))
 async def back_genres_cb(cb: types.CallbackQuery, state: FSMContext):
@@ -391,13 +418,13 @@ async def buy_cb(cb: types.CallbackQuery, state: FSMContext):
     
     session = user_sessions.get(cb.from_user.id)
     if not session:
-        await send(cb.message.chat.id, cb.from_user.id, "❌ Войдите в систему", login_kb())
+        await send(cb.message.chat.id, cb.from_user.id, "❌ Для покупки нужно войти в систему", login_kb())
         return
     
     await bot.send_invoice(
         chat_id=cb.message.chat.id,
         title=f"💎 {genre['display_name']}",
-        description="30 дней доступа ко всем играм жанра",
+        description=f"30 дней доступа ко всем играм жанра {genre['display_name']}",
         payload=f"pay_{genre_id}",
         provider_token="",
         currency="XTR",
@@ -446,10 +473,10 @@ async def game_cb(cb: types.CallbackQuery, state: FSMContext):
     session = user_sessions.get(cb.from_user.id)
     can_download = db.check_access(session['user_id'] if session else None, game['genre_id'])
     
-    if game['is_paid'] and not can_download:
+    if game.get('is_paid') and not can_download:
         text += f"\n\n⚠️ Платный жанр! Цена: {game['price_stars']} ⭐"
     
-    if game['screenshots']:
+    if game.get('screenshots'):
         media = []
         for i, s in enumerate(game['screenshots']):
             if i == 0:
@@ -478,14 +505,15 @@ async def download_cb(cb: types.CallbackQuery, state: FSMContext):
     session = user_sessions.get(cb.from_user.id)
     can_download = db.check_access(session['user_id'] if session else None, game['genre_id'])
     
-    if game['is_paid'] and not can_download:
+    if game.get('is_paid') and not can_download:
         genre = db.get_genre(game['genre_id'])
+        from aiogram.utils.keyboard import InlineKeyboardBuilder
         kb = InlineKeyboardBuilder()
         kb.button(text=f"💫 Купить за {genre['price_stars']} ⭐", callback_data=f"buy_{game['genre_id']}")
         kb.button(text="◀️ Назад", callback_data=f"game_{game_id}")
         kb.adjust(1)
         await send(cb.message.chat.id, cb.from_user.id,
-                  f"❌ Нет доступа! Купите жанр '{genre['display_name']}'", kb.as_markup())
+                  f"❌ Нет доступа! Купи жанр '{genre['display_name']}'", kb.as_markup())
         return
     
     wait = await send(cb.message.chat.id, cb.from_user.id, "⏳ Отправляю файл...")
@@ -502,7 +530,7 @@ async def download_cb(cb: types.CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "no_access")
 async def no_access(cb: types.CallbackQuery):
-    await cb.answer("❌ Нет доступа! Купите подписку на жанр.", show_alert=True)
+    await cb.answer("❌ Нет доступа! Купи подписку на жанр.", show_alert=True)
 
 # ================== КОММЕНТАРИИ ==================
 @dp.callback_query(F.data.startswith("comments_"))
@@ -520,12 +548,12 @@ async def comments_cb(cb: types.CallbackQuery, state: FSMContext):
         await send(cb.message.chat.id, cb.from_user.id, "❌ Игра не найдена")
         return
     
-    text = f"💬 Комментарии к '{game['title']}'\n\n"
+    text = f"💬 <b>Комментарии к '{game['title']}'</b>\n\n"
     if not comments:
         text += "Пока нет комментариев"
     else:
         for c in comments:
-            text += f"👤 <b>{c['user_nickname']}</b> [{c['created_date'][:16]}]\n{c['text']}\n──────────────────\n"
+            text += f"👤 <b>{c['user_nickname']}</b> [{c['created_date'][:16]}]\n{c['text']}\n\n"
     
     session = user_sessions.get(cb.from_user.id)
     await send(cb.message.chat.id, cb.from_user.id, text,
@@ -538,12 +566,12 @@ async def write_comment_start(cb: types.CallbackQuery, state: FSMContext):
     
     session = user_sessions.get(cb.from_user.id)
     if not session:
-        await send(cb.message.chat.id, cb.from_user.id, "❌ Войдите в систему", login_kb())
+        await send(cb.message.chat.id, cb.from_user.id, "❌ Войди в систему", login_kb())
         return
     
     await state.update_data(game_id=game_id)
     await state.set_state(Comment.text)
-    await send(cb.message.chat.id, cb.from_user.id, "✏️ Введите комментарий:", cancel_kb())
+    await send(cb.message.chat.id, cb.from_user.id, "✏️ Напиши комментарий:", cancel_kb())
 
 @dp.message(Comment.text)
 async def write_comment_text(msg: types.Message, state: FSMContext):
@@ -566,6 +594,7 @@ async def addgame_platform(cb: types.CallbackQuery, state: FSMContext):
     await state.update_data(platform=platform)
     
     genres = db.get_genres(platform)
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
     kb = InlineKeyboardBuilder()
     for g in genres:
         kb.button(text=g['display_name'], callback_data=f"addgame_genre_{g['id']}")
@@ -596,7 +625,7 @@ async def addgame_file(msg: types.Message, state: FSMContext):
     doc = msg.document
     
     if db.game_exists(doc.file_id):
-        await send(msg.chat.id, msg.from_user.id, "❌ Файл уже есть")
+        await send(msg.chat.id, msg.from_user.id, "❌ Файл уже есть в базе")
         await state.clear()
         return
     
@@ -615,13 +644,16 @@ async def addgame_file(msg: types.Message, state: FSMContext):
             channel_id=channel
         )
         if wait:
-            await bot.delete_message(msg.chat.id, wait.message_id)
+            try:
+                await bot.delete_message(msg.chat.id, wait.message_id)
+            except:
+                pass
         await state.set_state(AddGame.title)
         await send(msg.chat.id, msg.from_user.id,
                   "📝 Введи название (или /skip для имени файла):")
     except Exception as e:
         logger.error(f"Upload error: {e}")
-        await send(msg.chat.id, msg.from_user.id, "❌ Ошибка загрузки")
+        await send(msg.chat.id, msg.from_user.id, f"❌ Ошибка загрузки: {e}")
         await state.clear()
 
 @dp.message(AddGame.file)
@@ -649,7 +681,8 @@ async def addgame_desc(msg: types.Message, state: FSMContext):
     genre = db.get_genre(data['genre_id'])
     await state.clear()
     await send(msg.chat.id, msg.from_user.id,
-              f"✅ Игра добавлена! ID: {game_id}\n/addscreenshots {game_id}")
+              f"✅ Игра добавлена! ID: {game_id}\n"
+              f"Теперь добавь скриншоты: /addscreenshots {game_id}")
 
 # ================== ДОБАВЛЕНИЕ СКРИНШОТОВ ==================
 @dp.message(AddScreenshots.screens, F.photo)
@@ -689,19 +722,19 @@ async def add_genre_start(cb: types.CallbackQuery, state: FSMContext):
     await cb.answer()
     await state.set_state(GenreManage.name)
     await send(cb.message.chat.id, cb.from_user.id,
-              "➕ Введите название (латиница, например 'rpg'):", cancel_kb())
+              "➕ Введи название (латиница, например 'rpg'):", cancel_kb())
 
 @dp.message(GenreManage.name)
 async def add_genre_name(msg: types.Message, state: FSMContext):
     await state.update_data(name=msg.text.strip())
     await state.set_state(GenreManage.display)
-    await send(msg.chat.id, msg.from_user.id, "➕ Введите отображаемое название (с эмодзи):")
+    await send(msg.chat.id, msg.from_user.id, "➕ Введи отображаемое название (с эмодзи):")
 
 @dp.message(GenreManage.display)
 async def add_genre_display(msg: types.Message, state: FSMContext):
     await state.update_data(display=msg.text.strip())
     await state.set_state(GenreManage.desc)
-    await send(msg.chat.id, msg.from_user.id, "➕ Введите описание:")
+    await send(msg.chat.id, msg.from_user.id, "➕ Введи описание:")
 
 @dp.message(GenreManage.desc)
 async def add_genre_desc(msg: types.Message, state: FSMContext):
@@ -715,6 +748,7 @@ async def add_genre_platform(cb: types.CallbackQuery, state: FSMContext):
     await state.update_data(platform=platform)
     await cb.answer()
     
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
     kb = InlineKeyboardBuilder()
     kb.button(text="✅ Платный", callback_data="genre_paid_yes")
     kb.button(text="❌ Бесплатный", callback_data="genre_paid_no")
@@ -727,8 +761,8 @@ async def add_genre_platform(cb: types.CallbackQuery, state: FSMContext):
 async def add_genre_paid_yes(cb: types.CallbackQuery, state: FSMContext):
     await state.update_data(paid=True)
     await cb.answer()
-    await state.set_state(GenreManage.price)
-    await send(cb.message.chat.id, cb.from_user.id, "💰 Введите цену в Stars:")
+    # Не меняем состояние, ждем ввод цены
+    await send(cb.message.chat.id, cb.from_user.id, "💰 Введи цену в Stars:")
 
 @dp.callback_query(GenreManage.price, F.data == "genre_paid_no")
 async def add_genre_paid_no(cb: types.CallbackQuery, state: FSMContext):
@@ -745,13 +779,14 @@ async def add_genre_price(msg: types.Message, state: FSMContext):
         if price <= 0:
             raise ValueError
     except:
-        await send(msg.chat.id, msg.from_user.id, "❌ Введите положительное число")
+        await send(msg.chat.id, msg.from_user.id, "❌ Введи положительное число")
         return
     
     data = await state.get_data()
-    db.add_genre(data['name'], data['display'], data['desc'], data['platform'], True, price)
+    paid = data.get('paid', False)
+    db.add_genre(data['name'], data['display'], data['desc'], data['platform'], paid, price)
     await state.clear()
-    await send(msg.chat.id, msg.from_user.id, f"✅ Платный жанр добавлен за {price} ⭐!")
+    await send(msg.chat.id, msg.from_user.id, f"✅ Жанр добавлен за {price} ⭐!")
 
 @dp.callback_query(F.data.startswith("edit_genre_"))
 async def edit_genre(cb: types.CallbackQuery, state: FSMContext):
@@ -759,7 +794,11 @@ async def edit_genre(cb: types.CallbackQuery, state: FSMContext):
     genre = db.get_genre(genre_id)
     await cb.answer()
     
-    text = (f"✏️ <b>{genre['display_name']}</b>\n"
+    if not genre:
+        await send(cb.message.chat.id, cb.from_user.id, "❌ Жанр не найден")
+        return
+    
+    text = (f"✏️ <b>{genre['display_name']}</b>\n\n"
             f"Платформа: {config.PLATFORMS[genre['platform']]['display']}\n"
             f"Платный: {'✅' if genre['is_paid'] else '❌'}\n"
             f"Цена: {genre['price_stars']} ⭐\n"
@@ -796,22 +835,26 @@ async def update_genre(msg: types.Message, state: FSMContext):
     data = await state.get_data()
     val = msg.text.strip()
     
-    if data['field'] == 'name':
-        db.update_genre(data['genre_id'], display_name=val)
-        await send(msg.chat.id, msg.from_user.id, f"✅ Название обновлено: {val}")
-    elif data['field'] == 'desc':
-        db.update_genre(data['genre_id'], description=val)
-        await send(msg.chat.id, msg.from_user.id, "✅ Описание обновлено")
-    elif data['field'] == 'price':
-        try:
+    try:
+        if data['field'] == 'name':
+            db.update_genre(data['genre_id'], display_name=val)
+            await send(msg.chat.id, msg.from_user.id, f"✅ Название обновлено: {val}")
+        elif data['field'] == 'desc':
+            db.update_genre(data['genre_id'], description=val)
+            await send(msg.chat.id, msg.from_user.id, "✅ Описание обновлено")
+        elif data['field'] == 'price':
             price = int(val)
             if price <= 0:
                 raise ValueError
             db.update_genre(data['genre_id'], price_stars=price, is_paid=True)
             await send(msg.chat.id, msg.from_user.id, f"✅ Цена обновлена: {price} ⭐")
-        except:
-            await send(msg.chat.id, msg.from_user.id, "❌ Введите число")
-            return
+    except ValueError:
+        await send(msg.chat.id, msg.from_user.id, "❌ Введи число")
+        return
+    except Exception as e:
+        logger.error(f"Ошибка обновления: {e}")
+        await send(msg.chat.id, msg.from_user.id, "❌ Ошибка обновления")
+    
     await state.clear()
 
 @dp.callback_query(F.data.startswith("genre_toggle_"))
@@ -824,16 +867,17 @@ async def toggle_genre_paid(cb: types.CallbackQuery, state: FSMContext):
         await cb.answer("✅ Жанр стал бесплатным")
         await send(cb.message.chat.id, cb.from_user.id, f"✅ Жанр '{genre['display_name']}' теперь бесплатный!")
     else:
-        await state.update_data(genre_id=genre_id)
+        await state.update_data(genre_id=genre_id, field='price')
         await cb.answer()
         await state.set_state(GenreManage.new_val)
-        await send(cb.message.chat.id, cb.from_user.id, "💰 Введите цену:", cancel_kb())
+        await send(cb.message.chat.id, cb.from_user.id, "💰 Введи цену:", cancel_kb())
 
 @dp.callback_query(F.data.startswith("genre_delete_"))
 async def delete_genre_confirm(cb: types.CallbackQuery, state: FSMContext):
     genre_id = int(cb.data.replace("genre_delete_", ""))
     genre = db.get_genre(genre_id)
     
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
     kb = InlineKeyboardBuilder()
     kb.button(text="✅ Да, удалить", callback_data=f"genre_delete_final_{genre_id}")
     kb.button(text="❌ Отмена", callback_data=f"edit_genre_{genre_id}")
@@ -841,7 +885,7 @@ async def delete_genre_confirm(cb: types.CallbackQuery, state: FSMContext):
     
     await cb.answer()
     await send(cb.message.chat.id, cb.from_user.id,
-              f"⚠️ Удалить '{genre['display_name']}'? Все игры удалятся!", kb.as_markup())
+              f"⚠️ Удалить '{genre['display_name']}'?\nВсе игры этого жанра тоже удалятся!", kb.as_markup())
 
 @dp.callback_query(F.data.startswith("genre_delete_final_"))
 async def delete_genre_final(cb: types.CallbackQuery, state: FSMContext):
@@ -864,10 +908,20 @@ async def admin_stats_cb(cb: types.CallbackQuery):
     await cb.answer()
     await cmd_stats(cb.message)
 
+@dp.callback_query(F.data == "admin_add_game")
+async def admin_add_game_cb(cb: types.CallbackQuery, state: FSMContext):
+    await cb.answer()
+    await cmd_addgame(cb.message, state)
+
 # ================== ЗАПУСК ==================
 async def main():
     logger.info("🚀 GameVault запущен")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    try:
+        asyncio.run(main())
+    except KeyboardInterrupt:
+        logger.info("👋 Бот остановлен")
+    except Exception as e:
+        logger.error(f"Критическая ошибка: {e}")

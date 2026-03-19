@@ -29,15 +29,15 @@ def games_kb(games, genre_id, page, pages):
         size = g['file_size'] / (1024 * 1024)
         builder.button(text=f"{g['title']} ({size:.1f} МБ)", callback_data=f"game_{g['id']}")
     
-    nav_row = []
+    # Строка пагинации
+    nav_buttons = []
     if page > 1:
-        nav_row.append(InlineKeyboardButton(text="◀️", callback_data=f"genre_{genre_id}_{page-1}"))
-    nav_row.append(InlineKeyboardButton(text=f"📄 {page}/{pages}", callback_data="ignore"))
+        nav_buttons.append(InlineKeyboardButton(text="◀️", callback_data=f"genre_{genre_id}_{page-1}"))
+    nav_buttons.append(InlineKeyboardButton(text=f"📄 {page}/{pages}", callback_data="ignore"))
     if page < pages:
-        nav_row.append(InlineKeyboardButton(text="▶️", callback_data=f"genre_{genre_id}_{page+1}"))
-    if nav_row:
-        builder.row(*nav_row)
+        nav_buttons.append(InlineKeyboardButton(text="▶️", callback_data=f"genre_{genre_id}_{page+1}"))
     
+    builder.row(*nav_buttons)
     builder.button(text="◀️ К жанрам", callback_data=f"back_genres_{genre_id}")
     builder.button(text="👤 Профиль", callback_data="profile")
     builder.adjust(1)
@@ -59,14 +59,16 @@ def game_actions_kb(game_id, genre_id, can_download=False, logged_in=False):
 
 def comments_kb(game_id, page, pages, logged_in=False):
     builder = InlineKeyboardBuilder()
-    nav_row = []
+    
+    # Строка пагинации
+    nav_buttons = []
     if page > 1:
-        nav_row.append(InlineKeyboardButton(text="◀️", callback_data=f"comments_{game_id}_{page-1}"))
-    nav_row.append(InlineKeyboardButton(text=f"📄 {page}/{pages}", callback_data="ignore"))
+        nav_buttons.append(InlineKeyboardButton(text="◀️", callback_data=f"comments_{game_id}_{page-1}"))
+    nav_buttons.append(InlineKeyboardButton(text=f"📄 {page}/{pages}", callback_data="ignore"))
     if page < pages:
-        nav_row.append(InlineKeyboardButton(text="▶️", callback_data=f"comments_{game_id}_{page+1}"))
-    if nav_row:
-        builder.row(*nav_row)
+        nav_buttons.append(InlineKeyboardButton(text="▶️", callback_data=f"comments_{game_id}_{page+1}"))
+    
+    builder.row(*nav_buttons)
     
     if logged_in:
         builder.button(text="✏️ Написать", callback_data=f"write_comment_{game_id}")
@@ -99,6 +101,7 @@ def admin_main_kb():
     builder = InlineKeyboardBuilder()
     builder.button(text="🎮 Управление жанрами", callback_data="admin_genres")
     builder.button(text="📊 Статистика", callback_data="admin_stats")
+    builder.button(text="➕ Добавить игру", callback_data="admin_add_game")
     builder.button(text="◀️ Выход", callback_data="back_platforms")
     builder.adjust(1)
     return builder.as_markup()

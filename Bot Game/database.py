@@ -3,6 +3,9 @@ from typing import List, Dict, Optional, Tuple
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 import hashlib
+import logging
+
+logger = logging.getLogger(__name__)
 
 class Database:
     def __init__(self, db_path='games.db'):
@@ -47,6 +50,7 @@ class Database:
             
             # Покупки
             c.execute('''CREATE TABLE IF NOT EXISTS purchases (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
                 genre_id INTEGER NOT NULL,
                 expiry_date TIMESTAMP NOT NULL,
@@ -72,6 +76,7 @@ class Database:
             
             # Скриншоты
             c.execute('''CREATE TABLE IF NOT EXISTS screenshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
                 game_id INTEGER NOT NULL,
                 file_id TEXT NOT NULL,
                 FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE
@@ -91,27 +96,28 @@ class Database:
             
             # Индексы
             c.execute('CREATE INDEX IF NOT EXISTS idx_games_genre ON games(genre_id)')
+            c.execute('CREATE INDEX IF NOT EXISTS idx_comments_game ON comments(game_id)')
+            c.execute('CREATE INDEX IF NOT EXISTS idx_purchases_user ON purchases(user_id)')
             
-            # Жанры - ТОЛЬКО ПО 4 ШТУКИ ДЛЯ КАЖДОЙ ПЛАТФОРМЫ
-            genres_data = [
-                # Windows
+            # Жанры по умолчанию
+            default_genres = [
                 (1, 'simulator', '🎮 Симулятор', 'Игры-симуляторы', 0, 0, 'windows'),
                 (2, 'novel', '📖 Новелла', 'Визуальные новеллы', 0, 0, 'windows'),
                 (3, 'rpg', '⚔️ RPG', 'Ролевые игры', 0, 0, 'windows'),
                 (4, 'fighting', '👊 Файтинг', 'Файтинги', 0, 0, 'windows'),
-                # Android
                 (5, 'android_sim', '🎮 Симулятор', 'Симуляторы для Android', 0, 0, 'android'),
                 (6, 'android_novel', '📖 Новелла', 'Новеллы для Android', 0, 0, 'android'),
                 (7, 'android_rpg', '⚔️ RPG', 'RPG для Android', 0, 0, 'android'),
                 (8, 'android_fight', '👊 Файтинг', 'Файтинги для Android', 0, 0, 'android')
             ]
             
-            for id, name, display, desc, paid, price, platform in genres_data:
+            for id, name, display, desc, paid, price, platform in default_genres:
                 c.execute('''INSERT OR IGNORE INTO genres 
                     (id, name, display_name, description, is_paid, price_stars, platform)
                     VALUES (?, ?, ?, ?, ?, ?, ?)''', (id, name, display, desc, paid, price, platform))
             
             conn.commit()
+            logger.info("✅ База данных инициализирована")
     
     # === ПОЛЬЗОВАТЕЛИ ===
     def register(self, tg_id, nick, pwd):
@@ -122,7 +128,8 @@ class Database:
                          (tg_id, nick, self._hash(pwd)))
                 conn.commit()
                 return c.lastrowid
-            except:
+            except sqlite3.IntegrityError as e:
+                logger.error(f"Ошибка регистрации: {e}")
                 return None
     
     def login(self, nick, pwd):
@@ -175,7 +182,8 @@ class Database:
         with self.get_conn() as conn:
             c = conn.cursor()
             c.execute('''INSERT INTO genres (name, display_name, description, platform, is_paid, price_stars)
-                        VALUES (?, ?, ?, ?, ?, ?)''', (name, display, desc, platform, 1 if paid else 0, price))
+                        VALUES (?, ?, ?, ?, ?, ?)''', 
+                     (name, display, desc, platform, 1 if paid else 0, price))
             conn.commit()
             return c.lastrowid
     
@@ -260,13 +268,13 @@ class Database:
         with self.get_conn() as conn:
             c = conn.cursor()
             c.execute('''SELECT g.*, gr.display_name as genre_name, gr.is_paid, gr.price_stars
-                        FROM games g JOIN genres gr ON g.genre_id = gr.id
+                        FROM games g LEFT JOIN genres gr ON g.genre_id = gr.id
                         WHERE g.id = ?''', (game_id,))
             game = c.fetchone()
             if not game:
                 return None
             result = dict(game)
-            c.execute('SELECT file_id FROM screenshots WHERE game_id = ?', (game_id,))
+            c.execute('SELECT file_id FROM screenshots WHERE game_id = ? ORDER BY id', (game_id,))
             result['screenshots'] = [dict(r) for r in c.fetchall()]
             return result
     
@@ -315,8 +323,14 @@ class Database:
     def get_stats(self):
         with self.get_conn() as conn:
             c = conn.cursor()
-            c.execute('SELECT COUNT(*) FROM games'); games = c.fetchone()[0]
-            c.execute('SELECT COUNT(*) FROM users'); users = c.fetchone()[0]
-            c.execute('SELECT COUNT(*) FROM genres'); genres = c.fetchone()[0]
-            c.execute('SELECT SUM(download_count) FROM games'); dl = c.fetchone()[0] or 0
-            return {'games': games, 'users': users, 'genres': genres, 'downloads': dl}
+            c.execute('SELECT COUNT(*) FROM games')
+            games = c.fetchone()[0]
+            c.execute('SELECT COUNT(*) FROM users')
+            users = c.fetchone()[0]
+            c.execute('SELECT COUNT(*) FROM genres')
+            genres = c.fetchone()[0]
+            c.execute('SELECT SUM(download_count) FROM games')
+            dl = c.fetchone()[0] or 0
+            c.execute('SELECT COUNT(*) FROM comments')
+            comments = c.fetchone()[0]
+            return {'games': games, 'users': users, 'genres': genres, 'downloads': dl, 'comments': comments}
