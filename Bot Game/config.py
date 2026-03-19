@@ -4,11 +4,12 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# Токен бота
+# Токен бота - ОБЯЗАТЕЛЬНО
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 if not BOT_TOKEN:
     raise ValueError("❌ BOT_TOKEN не найден в .env файле!")
 
+# ID администраторов
 ADMIN_IDS = [int(id.strip()) for id in os.getenv("ADMIN_IDS", "").split(",") if id.strip()]
 
 # ID каналов для хранения файлов

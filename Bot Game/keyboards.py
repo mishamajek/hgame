@@ -37,13 +37,15 @@ def games_kb(games, genre_id, page, pages):
     if page < pages:
         nav_buttons.append(InlineKeyboardButton(text="▶️", callback_data=f"genre_{genre_id}_{page+1}"))
     
-    builder.row(*nav_buttons)
+    if nav_buttons:
+        builder.row(*nav_buttons)
+    
     builder.button(text="◀️ К жанрам", callback_data=f"back_genres_{genre_id}")
     builder.button(text="👤 Профиль", callback_data="profile")
     builder.adjust(1)
     return builder.as_markup()
 
-def game_actions_kb(game_id, genre_id, can_download=False, logged_in=False):
+def game_actions_kb(game_id, genre_id, can_download=False, logged_in=False, is_admin=False):
     builder = InlineKeyboardBuilder()
     if can_download:
         builder.button(text="📥 Скачать", callback_data=f"download_{game_id}")
@@ -52,8 +54,18 @@ def game_actions_kb(game_id, genre_id, can_download=False, logged_in=False):
     builder.button(text="💬 Комментарии", callback_data=f"comments_{game_id}_1")
     if logged_in:
         builder.button(text="✏️ Комментировать", callback_data=f"write_comment_{game_id}")
+    if is_admin:
+        builder.button(text="⚙️ Управление", callback_data=f"game_manage_{game_id}")
     builder.button(text="◀️ Назад", callback_data=f"back_games_{genre_id}_1")
     builder.button(text="👤 Профиль", callback_data="profile")
+    builder.adjust(1)
+    return builder.as_markup()
+
+def game_manage_kb(game_id, genre_id):
+    """Клавиатура управления игрой для админа"""
+    builder = InlineKeyboardBuilder()
+    builder.button(text="❌ Удалить игру", callback_data=f"game_delete_{game_id}")
+    builder.button(text="◀️ Назад к игре", callback_data=f"game_{game_id}")
     builder.adjust(1)
     return builder.as_markup()
 
@@ -68,7 +80,8 @@ def comments_kb(game_id, page, pages, logged_in=False):
     if page < pages:
         nav_buttons.append(InlineKeyboardButton(text="▶️", callback_data=f"comments_{game_id}_{page+1}"))
     
-    builder.row(*nav_buttons)
+    if nav_buttons:
+        builder.row(*nav_buttons)
     
     if logged_in:
         builder.button(text="✏️ Написать", callback_data=f"write_comment_{game_id}")
@@ -127,12 +140,13 @@ def admin_genres_kb(genres):
     return builder.as_markup()
 
 def edit_genre_kb(genre_id):
+    """Клавиатура редактирования жанра - РАБОЧАЯ"""
     builder = InlineKeyboardBuilder()
     builder.button(text="📝 Название", callback_data=f"genre_edit_name_{genre_id}")
     builder.button(text="📋 Описание", callback_data=f"genre_edit_desc_{genre_id}")
     builder.button(text="💰 Цена", callback_data=f"genre_edit_price_{genre_id}")
-    builder.button(text="💎 Платный/бесплатный", callback_data=f"genre_toggle_{genre_id}")
-    builder.button(text="❌ Удалить", callback_data=f"genre_delete_{genre_id}")
+    builder.button(text="💎 Платный/бесплатный", callback_data=f"genre_toggle_paid_{genre_id}")
+    builder.button(text="❌ Удалить жанр", callback_data=f"genre_delete_{genre_id}")
     builder.button(text="◀️ Назад", callback_data="admin_genres")
     builder.adjust(1)
     return builder.as_markup()

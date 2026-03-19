@@ -12,6 +12,7 @@ from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.fsm.storage.memory import MemoryStorage
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 import config
 from database import Database
@@ -111,18 +112,14 @@ class GenreManage(StatesGroup):
     platform = State()
     price = State()
     new_val = State()
+    edit_field = State()
+    genre_id = State()
 
 # ================== КОМАНДЫ ==================
 @dp.message(Command("start"))
 async def cmd_start(msg: types.Message, state: FSMContext):
     await state.clear()
     await clear_chat(msg.chat.id, msg.from_user.id)
-    
-    # Создаем пользователя, если его нет
-    user = db.get_user_by_telegram(msg.from_user.id)
-    if not user:
-        # Просто регистрируем в системе без пароля
-        pass
     
     await send(msg.chat.id, msg.from_user.id,
                "🎮 <b>GameVault</b>\n\nВыбери платформу:", platforms_kb())
@@ -344,7 +341,6 @@ async def genre_cb(cb: types.CallbackQuery, state: FSMContext):
                 f"💰 Цена: {genre['price_stars']} ⭐ за 30 дней\n\n"
                 f"Ты можешь посмотреть игры, но скачать их сможешь только после покупки.")
         
-        from aiogram.utils.keyboard import InlineKeyboardBuilder
         kb = InlineKeyboardBuilder()
         kb.button(text=f"💫 Купить за {genre['price_stars']} ⭐", callback_data=f"buy_{genre_id}")
         kb.button(text="📋 Посмотреть игры", callback_data=f"preview_{genre_id}_1")
@@ -472,6 +468,7 @@ async def game_cb(cb: types.CallbackQuery, state: FSMContext):
     
     session = user_sessions.get(cb.from_user.id)
     can_download = db.check_access(session['user_id'] if session else None, game['genre_id'])
+    is_admin = cb.from_user.id in config.ADMIN_IDS
     
     if game.get('is_paid') and not can_download:
         text += f"\n\n⚠️ Платный жанр! Цена: {game['price_stars']} ⭐"
@@ -485,10 +482,94 @@ async def game_cb(cb: types.CallbackQuery, state: FSMContext):
                 media.append(types.InputMediaPhoto(media=s['file_id']))
         await send_media(cb.message.chat.id, cb.from_user.id, media)
         await send(cb.message.chat.id, cb.from_user.id, "Выбери действие:",
-                  game_actions_kb(game_id, game['genre_id'], can_download, session is not None))
+                  game_actions_kb(game_id, game['genre_id'], can_download, session is not None, is_admin))
     else:
         await send(cb.message.chat.id, cb.from_user.id, text,
-                  game_actions_kb(game_id, game['genre_id'], can_download, session is not None))
+                  game_actions_kb(game_id, game['genre_id'], can_download, session is not None, is_admin))
+
+# ================== УПРАВЛЕНИЕ ИГРАМИ (УДАЛЕНИЕ) ==================
+@dp.callback_query(F.data.startswith("game_manage_"))
+async def game_manage_cb(cb: types.CallbackQuery, state: FSMContext):
+    """Меню управления игрой для админа"""
+    game_id = int(cb.data.replace("game_manage_", ""))
+    game = db.get_game(game_id)
+    
+    await cb.answer()
+    
+    if not game:
+        await send(cb.message.chat.id, cb.from_user.id, "❌ Игра не найдена")
+        return
+    
+    if cb.from_user.id not in config.ADMIN_IDS:
+        await send(cb.message.chat.id, cb.from_user.id, "❌ Нет прав")
+        return
+    
+    text = (f"⚙️ <b>Управление игрой</b>\n\n"
+            f"🎮 {game['title']}\n"
+            f"ID: {game_id}\n\n"
+            f"Выбери действие:")
+    
+    kb = InlineKeyboardBuilder()
+    kb.button(text="❌ Удалить игру", callback_data=f"game_delete_{game_id}")
+    kb.button(text="◀️ Назад к игре", callback_data=f"game_{game_id}")
+    kb.adjust(1)
+    
+    await send(cb.message.chat.id, cb.from_user.id, text, kb.as_markup())
+
+@dp.callback_query(F.data.startswith("game_delete_"))
+async def game_delete_confirm(cb: types.CallbackQuery, state: FSMContext):
+    """Подтверждение удаления игры"""
+    game_id = int(cb.data.replace("game_delete_", ""))
+    game = db.get_game(game_id)
+    
+    await cb.answer()
+    
+    if cb.from_user.id not in config.ADMIN_IDS:
+        await send(cb.message.chat.id, cb.from_user.id, "❌ Нет прав")
+        return
+    
+    if not game:
+        await send(cb.message.chat.id, cb.from_user.id, "❌ Игра не найдена")
+        return
+    
+    kb = InlineKeyboardBuilder()
+    kb.button(text="✅ Да, удалить", callback_data=f"game_delete_final_{game_id}")
+    kb.button(text="❌ Отмена", callback_data=f"game_{game_id}")
+    kb.adjust(1)
+    
+    await send(
+        cb.message.chat.id,
+        cb.from_user.id,
+        f"⚠️ <b>Удалить игру?</b>\n\n"
+        f"🎮 {game['title']}\n"
+        f"Все скриншоты и комментарии будут удалены.",
+        kb.as_markup()
+    )
+
+@dp.callback_query(F.data.startswith("game_delete_final_"))
+async def game_delete_final(cb: types.CallbackQuery, state: FSMContext):
+    """Окончательное удаление игры"""
+    game_id = int(cb.data.replace("game_delete_final_", ""))
+    game = db.get_game(game_id)
+    
+    if cb.from_user.id not in config.ADMIN_IDS:
+        await cb.answer("❌ Нет прав")
+        return
+    
+    if not game:
+        await cb.answer("❌ Игра не найдена")
+        return
+    
+    if db.delete_game(game_id):
+        await cb.answer("✅ Игра удалена")
+        await send(
+            cb.message.chat.id,
+            cb.from_user.id,
+            f"✅ Игра '{game['title']}' удалена",
+            platforms_kb()
+        )
+    else:
+        await cb.answer("❌ Ошибка при удалении")
 
 @dp.callback_query(F.data.startswith("download_"))
 async def download_cb(cb: types.CallbackQuery, state: FSMContext):
@@ -507,7 +588,6 @@ async def download_cb(cb: types.CallbackQuery, state: FSMContext):
     
     if game.get('is_paid') and not can_download:
         genre = db.get_genre(game['genre_id'])
-        from aiogram.utils.keyboard import InlineKeyboardBuilder
         kb = InlineKeyboardBuilder()
         kb.button(text=f"💫 Купить за {genre['price_stars']} ⭐", callback_data=f"buy_{game['genre_id']}")
         kb.button(text="◀️ Назад", callback_data=f"game_{game_id}")
@@ -523,7 +603,10 @@ async def download_cb(cb: types.CallbackQuery, state: FSMContext):
                                        caption=f"🎮 {game['title']}\n\nПриятной игры!")
         await add_msg(cb.from_user.id, file.message_id)
         if wait:
-            await bot.delete_message(cb.message.chat.id, wait.message_id)
+            try:
+                await bot.delete_message(cb.message.chat.id, wait.message_id)
+            except:
+                pass
     except Exception as e:
         logger.error(f"Download error: {e}")
         await send(cb.message.chat.id, cb.from_user.id, "❌ Ошибка при отправке")
@@ -594,7 +677,6 @@ async def addgame_platform(cb: types.CallbackQuery, state: FSMContext):
     await state.update_data(platform=platform)
     
     genres = db.get_genres(platform)
-    from aiogram.utils.keyboard import InlineKeyboardBuilder
     kb = InlineKeyboardBuilder()
     for g in genres:
         kb.button(text=g['display_name'], callback_data=f"addgame_genre_{g['id']}")
@@ -748,7 +830,6 @@ async def add_genre_platform(cb: types.CallbackQuery, state: FSMContext):
     await state.update_data(platform=platform)
     await cb.answer()
     
-    from aiogram.utils.keyboard import InlineKeyboardBuilder
     kb = InlineKeyboardBuilder()
     kb.button(text="✅ Платный", callback_data="genre_paid_yes")
     kb.button(text="❌ Бесплатный", callback_data="genre_paid_no")
@@ -761,7 +842,6 @@ async def add_genre_platform(cb: types.CallbackQuery, state: FSMContext):
 async def add_genre_paid_yes(cb: types.CallbackQuery, state: FSMContext):
     await state.update_data(paid=True)
     await cb.answer()
-    # Не меняем состояние, ждем ввод цены
     await send(cb.message.chat.id, cb.from_user.id, "💰 Введи цену в Stars:")
 
 @dp.callback_query(GenreManage.price, F.data == "genre_paid_no")
@@ -809,7 +889,7 @@ async def edit_genre(cb: types.CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data.startswith("genre_edit_name_"))
 async def edit_genre_name(cb: types.CallbackQuery, state: FSMContext):
     genre_id = int(cb.data.replace("genre_edit_name_", ""))
-    await state.update_data(genre_id=genre_id, field='name')
+    await state.update_data(genre_id=genre_id, edit_field='name')
     await cb.answer()
     await state.set_state(GenreManage.new_val)
     await send(cb.message.chat.id, cb.from_user.id, "✏️ Новое название:", cancel_kb())
@@ -817,7 +897,7 @@ async def edit_genre_name(cb: types.CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data.startswith("genre_edit_desc_"))
 async def edit_genre_desc(cb: types.CallbackQuery, state: FSMContext):
     genre_id = int(cb.data.replace("genre_edit_desc_", ""))
-    await state.update_data(genre_id=genre_id, field='desc')
+    await state.update_data(genre_id=genre_id, edit_field='desc')
     await cb.answer()
     await state.set_state(GenreManage.new_val)
     await send(cb.message.chat.id, cb.from_user.id, "✏️ Новое описание:", cancel_kb())
@@ -825,31 +905,40 @@ async def edit_genre_desc(cb: types.CallbackQuery, state: FSMContext):
 @dp.callback_query(F.data.startswith("genre_edit_price_"))
 async def edit_genre_price(cb: types.CallbackQuery, state: FSMContext):
     genre_id = int(cb.data.replace("genre_edit_price_", ""))
-    await state.update_data(genre_id=genre_id, field='price')
+    await state.update_data(genre_id=genre_id, edit_field='price')
     await cb.answer()
     await state.set_state(GenreManage.new_val)
     await send(cb.message.chat.id, cb.from_user.id, "💰 Новая цена:", cancel_kb())
 
 @dp.message(GenreManage.new_val)
-async def update_genre(msg: types.Message, state: FSMContext):
+async def genre_update_value(msg: types.Message, state: FSMContext):
     data = await state.get_data()
+    genre_id = data.get('genre_id')
+    field = data.get('edit_field')
     val = msg.text.strip()
     
+    if not genre_id:
+        await send(msg.chat.id, msg.from_user.id, "❌ Ошибка: нет ID жанра")
+        await state.clear()
+        return
+    
     try:
-        if data['field'] == 'name':
-            db.update_genre(data['genre_id'], display_name=val)
+        if field == 'name':
+            db.update_genre(genre_id, display_name=val)
             await send(msg.chat.id, msg.from_user.id, f"✅ Название обновлено: {val}")
-        elif data['field'] == 'desc':
-            db.update_genre(data['genre_id'], description=val)
+        elif field == 'desc':
+            db.update_genre(genre_id, description=val)
             await send(msg.chat.id, msg.from_user.id, "✅ Описание обновлено")
-        elif data['field'] == 'price':
+        elif field == 'price':
             price = int(val)
             if price <= 0:
                 raise ValueError
-            db.update_genre(data['genre_id'], price_stars=price, is_paid=True)
+            db.update_genre(genre_id, price_stars=price, is_paid=True)
             await send(msg.chat.id, msg.from_user.id, f"✅ Цена обновлена: {price} ⭐")
+        else:
+            await send(msg.chat.id, msg.from_user.id, "❌ Неизвестное поле")
     except ValueError:
-        await send(msg.chat.id, msg.from_user.id, "❌ Введи число")
+        await send(msg.chat.id, msg.from_user.id, "❌ Введи положительное число")
         return
     except Exception as e:
         logger.error(f"Ошибка обновления: {e}")
@@ -857,27 +946,43 @@ async def update_genre(msg: types.Message, state: FSMContext):
     
     await state.clear()
 
-@dp.callback_query(F.data.startswith("genre_toggle_"))
-async def toggle_genre_paid(cb: types.CallbackQuery, state: FSMContext):
-    genre_id = int(cb.data.replace("genre_toggle_", ""))
+@dp.callback_query(F.data.startswith("genre_toggle_paid_"))
+async def genre_toggle_paid_cb(cb: types.CallbackQuery, state: FSMContext):
+    """Переключение платный/бесплатный"""
+    if cb.from_user.id not in config.ADMIN_IDS:
+        await cb.answer("❌ Нет прав")
+        return
+    
+    genre_id = int(cb.data.replace("genre_toggle_paid_", ""))
     genre = db.get_genre(genre_id)
+    
+    if not genre:
+        await cb.answer("❌ Жанр не найден")
+        return
     
     if genre['is_paid']:
         db.update_genre(genre_id, is_paid=False, price_stars=0)
         await cb.answer("✅ Жанр стал бесплатным")
-        await send(cb.message.chat.id, cb.from_user.id, f"✅ Жанр '{genre['display_name']}' теперь бесплатный!")
+        await send(
+            cb.message.chat.id,
+            cb.from_user.id,
+            f"✅ Жанр '{genre['display_name']}' теперь бесплатный!"
+        )
     else:
-        await state.update_data(genre_id=genre_id, field='price')
-        await cb.answer()
+        await state.update_data(genre_id=genre_id, edit_field='price')
         await state.set_state(GenreManage.new_val)
-        await send(cb.message.chat.id, cb.from_user.id, "💰 Введи цену:", cancel_kb())
+        await send(
+            cb.message.chat.id,
+            cb.from_user.id,
+            "💰 Введи цену в Stars:",
+            cancel_kb()
+        )
 
 @dp.callback_query(F.data.startswith("genre_delete_"))
 async def delete_genre_confirm(cb: types.CallbackQuery, state: FSMContext):
     genre_id = int(cb.data.replace("genre_delete_", ""))
     genre = db.get_genre(genre_id)
     
-    from aiogram.utils.keyboard import InlineKeyboardBuilder
     kb = InlineKeyboardBuilder()
     kb.button(text="✅ Да, удалить", callback_data=f"genre_delete_final_{genre_id}")
     kb.button(text="❌ Отмена", callback_data=f"edit_genre_{genre_id}")

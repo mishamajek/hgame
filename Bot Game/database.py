@@ -28,7 +28,7 @@ class Database:
         with self.get_conn() as conn:
             c = conn.cursor()
             
-            # Пользователи
+            # Таблица пользователей
             c.execute('''CREATE TABLE IF NOT EXISTS users (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 telegram_id INTEGER UNIQUE,
@@ -37,7 +37,7 @@ class Database:
                 registered_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP
             )''')
             
-            # Жанры
+            # Таблица жанров
             c.execute('''CREATE TABLE IF NOT EXISTS genres (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
@@ -48,7 +48,7 @@ class Database:
                 platform TEXT NOT NULL
             )''')
             
-            # Покупки
+            # Таблица покупок
             c.execute('''CREATE TABLE IF NOT EXISTS purchases (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 user_id INTEGER NOT NULL,
@@ -59,7 +59,7 @@ class Database:
                 UNIQUE(user_id, genre_id)
             )''')
             
-            # Игры
+            # Таблица игр
             c.execute('''CREATE TABLE IF NOT EXISTS games (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 title TEXT NOT NULL,
@@ -74,7 +74,7 @@ class Database:
                 FOREIGN KEY (genre_id) REFERENCES genres(id)
             )''')
             
-            # Скриншоты
+            # Таблица скриншотов
             c.execute('''CREATE TABLE IF NOT EXISTS screenshots (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 game_id INTEGER NOT NULL,
@@ -82,7 +82,7 @@ class Database:
                 FOREIGN KEY (game_id) REFERENCES games(id) ON DELETE CASCADE
             )''')
             
-            # Комментарии
+            # Таблица комментариев
             c.execute('''CREATE TABLE IF NOT EXISTS comments (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 game_id INTEGER NOT NULL,
@@ -99,22 +99,24 @@ class Database:
             c.execute('CREATE INDEX IF NOT EXISTS idx_comments_game ON comments(game_id)')
             c.execute('CREATE INDEX IF NOT EXISTS idx_purchases_user ON purchases(user_id)')
             
-            # Жанры по умолчанию
-            default_genres = [
-                (1, 'simulator', '🎮 Симулятор', 'Игры-симуляторы', 0, 0, 'windows'),
-                (2, 'novel', '📖 Новелла', 'Визуальные новеллы', 0, 0, 'windows'),
-                (3, 'rpg', '⚔️ RPG', 'Ролевые игры', 0, 0, 'windows'),
-                (4, 'fighting', '👊 Файтинг', 'Файтинги', 0, 0, 'windows'),
-                (5, 'android_sim', '🎮 Симулятор', 'Симуляторы для Android', 0, 0, 'android'),
-                (6, 'android_novel', '📖 Новелла', 'Новеллы для Android', 0, 0, 'android'),
-                (7, 'android_rpg', '⚔️ RPG', 'RPG для Android', 0, 0, 'android'),
-                (8, 'android_fight', '👊 Файтинг', 'Файтинги для Android', 0, 0, 'android')
-            ]
-            
-            for id, name, display, desc, paid, price, platform in default_genres:
-                c.execute('''INSERT OR IGNORE INTO genres 
-                    (id, name, display_name, description, is_paid, price_stars, platform)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)''', (id, name, display, desc, paid, price, platform))
+            # Жанры по умолчанию (ТОЛЬКО ЕСЛИ ТАБЛИЦА ПУСТА)
+            c.execute("SELECT COUNT(*) FROM genres")
+            if c.fetchone()[0] == 0:
+                default_genres = [
+                    ('simulator', '🎮 Симулятор', 'Игры-симуляторы', 'windows', 0, 0),
+                    ('novel', '📖 Новелла', 'Визуальные новеллы', 'windows', 0, 0),
+                    ('rpg', '⚔️ RPG', 'Ролевые игры', 'windows', 0, 0),
+                    ('fighting', '👊 Файтинг', 'Файтинги', 'windows', 0, 0),
+                    ('android_sim', '🎮 Симулятор', 'Симуляторы для Android', 'android', 0, 0),
+                    ('android_novel', '📖 Новелла', 'Новеллы для Android', 'android', 0, 0),
+                    ('android_rpg', '⚔️ RPG', 'RPG для Android', 'android', 0, 0),
+                    ('android_fight', '👊 Файтинг', 'Файтинги для Android', 'android', 0, 0)
+                ]
+                
+                for name, display, desc, platform, paid, price in default_genres:
+                    c.execute('''INSERT INTO genres 
+                        (name, display_name, description, platform, is_paid, price_stars)
+                        VALUES (?, ?, ?, ?, ?, ?)''', (name, display, desc, platform, paid, price))
             
             conn.commit()
             logger.info("✅ База данных инициализирована")
@@ -166,9 +168,9 @@ class Database:
         with self.get_conn() as conn:
             c = conn.cursor()
             if platform:
-                c.execute('SELECT * FROM genres WHERE platform = ? ORDER BY id', (platform,))
+                c.execute('SELECT * FROM genres WHERE platform = ? ORDER BY display_name', (platform,))
             else:
-                c.execute('SELECT * FROM genres ORDER BY platform, id')
+                c.execute('SELECT * FROM genres ORDER BY platform, display_name')
             return [dict(r) for r in c.fetchall()]
     
     def get_genre(self, genre_id):
@@ -224,7 +226,9 @@ class Database:
         if not user_id:
             return False
         genre = self.get_genre(genre_id)
-        if not genre or not genre['is_paid']:
+        if not genre:
+            return False
+        if not genre['is_paid']:
             return True
         with self.get_conn() as conn:
             c = conn.cursor()
@@ -277,6 +281,14 @@ class Database:
             c.execute('SELECT file_id FROM screenshots WHERE game_id = ? ORDER BY id', (game_id,))
             result['screenshots'] = [dict(r) for r in c.fetchall()]
             return result
+    
+    def delete_game(self, game_id):
+        """Удаление игры и всех её скриншотов (каскадно)"""
+        with self.get_conn() as conn:
+            c = conn.cursor()
+            c.execute('DELETE FROM games WHERE id = ?', (game_id,))
+            conn.commit()
+            return c.rowcount > 0
     
     def inc_downloads(self, game_id):
         with self.get_conn() as conn:
